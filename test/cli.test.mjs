@@ -33,6 +33,24 @@ test('CLI merges gzip and stdin, generates nested HTML and JSON outputs', async 
   assert.ok((await readFile(htmlPath, 'utf8')).startsWith('<!doctype html>'));
 });
 
+test('CLI excludes static endpoints by default and supports --include-static', async t => {
+  const directory = await temporary(t);
+  const htmlPath = join(directory, 'report.html');
+  const jsonPath = join(directory, 'stats.json');
+  const input = ['/assets/app.js?v=1', '/assets/style.css', '/api/users'].map(target =>
+    `192.0.2.1 [2026-10-30T09:55:40+08:00] "GET ${target} HTTP/1.1" 200 123 "-" "Agent" rt=0.1`).join('\n');
+  for (const includeStatic of [false, true]) {
+    const result = run(['-', '-o', htmlPath, '--json', jsonPath, ...(includeStatic ? ['--include-static'] : [])], input);
+    assert.equal(result.status, 0, result.stderr);
+    const data = JSON.parse(await readFile(jsonPath, 'utf8'));
+    assert.equal(data.overall.count, 3);
+    assert.equal(data.endpoints.length, includeStatic ? 3 : 1);
+    assert.equal(data.slowest.length, 3);
+    assert.ok((await readFile(htmlPath, 'utf8')).startsWith('<!doctype html>'));
+  }
+  assert.ok(run(['--help']).stdout.includes('--include-static'));
+});
+
 test('CLI rejects invalid options, empty input, unreadable files and output collisions', async t => {
   const directory = await temporary(t);
   const output = join(directory, 'report.html');

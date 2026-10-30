@@ -23,6 +23,9 @@ cat /var/log/nginx/access.log | node analyze.mjs - -o report.html
 # 将 /api/users/123、/api/users/456 合并为 /api/users/:id
 node analyze.mjs access.log --normalize-ids
 
+# 接口明细也包含 JS、CSS 等静态资源
+node analyze.mjs access.log --include-static
+
 # 运行测试
 npm test
 ```
@@ -36,6 +39,7 @@ npm test
 | `--slow-ms` | `1000` | 慢请求阈值，毫秒，包含等于阈值的请求 |
 | `--top` | `20` | 保留耗时最高的请求条数，不限于慢请求 |
 | `--normalize-ids` | 关闭 | 将完整数字和 UUID 路径段替换为 `:id` |
+| `--include-static` | 关闭 | 接口明细及优先排查包含静态资源，默认忽略 |
 | `-h, --help` | | 查看帮助 |
 
 ## 日志格式
@@ -78,6 +82,7 @@ access_log /var/log/nginx/access_timing.log timings;
 
 ### 统计口径
 
+- 接口明细和优先排查默认忽略静态资源，可通过 `--include-static` 恢复。按去掉查询参数后的路径扩展名匹配，不区分大小写：JS/MJS/CJS、CSS、MAP、HTML/HTM、PNG/JPG/JPEG/GIF/SVG/ICO/WEBP/AVIF/BMP/TIF/TIFF、WOFF/WOFF2/TTF/OTF/EOT、MP3/MP4/WEBM/OGG/WAV、PDF。总体指标、时间趋势、数据质量及请求耗时 Top 仍包含全部有效请求；耗时贡献的分母仍为全部累计 RT。
 - 分位数采用精确的 nearest-rank：排序后取第 `ceil(n × p)` 个观测值。缺失值不参与统计，也不填零；不同指标的样本量可能不同。
 - 慢请求率的分母为有效 RT 数；5xx / 4xx 比例的分母为有效请求数。4xx 不并入服务端错误率。
 - 多次上游尝试（`0.001, 0.002`）和内部重定向组（`0.001 : 0.002`）逐项求和。某个计时列表含 `-` 或非法值时，该项整体视为缺失，避免低估；多次尝试不计算阶段差值。

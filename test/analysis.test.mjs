@@ -6,6 +6,23 @@ import { analyzeStreams, openInputs, parseLine, summarize } from '../lib/analysi
 const line = (tail, target = '/api/test/?tel=secret') => `192.0.2.1 [2026-10-30T09:55:40+08:00] "GET ${target} HTTP/1.1" 200 123 "-" "Agent" ${tail}`;
 const analyze = (text, options) => analyzeStreams([Readable.from([text])], options);
 
+test('static resources are excluded only from endpoint aggregation by default', async () => {
+  const targets = ['/assets/app.js?v=1', '/assets/style.CSS?theme=dark', '/app.mjs', '/app.cjs', '/app.js.map', '/logo.svg', '/photo.webp', '/font.woff2', '/video.mp4', '/index.html', '/document.pdf', '/api/data.json', '/api/users', '/api/app.js/details', '/api/search?file=app.js'];
+  const text = targets.map(target => line('rt=2', target)).join('\n');
+  const result = await analyze(text);
+  assert.deepEqual(result.endpoints.map(group => group.key), targets.slice(11).map(target => `GET ${target.split('?')[0]}`));
+  assert.equal(result.overall.count, targets.length);
+  assert.equal(result.overall.slow, targets.length);
+  assert.equal(result.slowest.length, targets.length);
+  assert.equal(result.timeline[0].count, targets.length);
+  assert.equal(result.quality.invalid, 0);
+  const included = await analyze(text, { includeStatic: true });
+  assert.equal(included.endpoints.length, targets.length);
+  const staticOnly = await analyze(line('rt=2', 'https://example.com/app.JS?v=1'));
+  assert.equal(staticOnly.overall.count, 1);
+  assert.equal(staticOnly.endpoints.length, 0);
+});
+
 test('sample: exact aggregation, slow requests and bottleneck evidence', async () => {
   const result = await analyzeStreams(openInputs([new URL('../examples/access.log', import.meta.url)]));
   assert.equal(result.overall.count, 10);

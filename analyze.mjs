@@ -15,6 +15,7 @@ const help = `Nginx access log 性能分析（Node.js >= 20，无需安装依赖
   --slow-ms <毫秒>        慢请求阈值，默认 1000
   --top <数量>            耗时最高请求条数，默认 20
   --normalize-ids         将路径中的纯数字和 UUID 段聚合为 :id
+  --include-static        接口明细包含静态资源（默认忽略 JS、CSS 等）
   -h, --help              显示帮助
 
 示例：
@@ -28,6 +29,7 @@ export async function main(args = process.argv.slice(2)) {
     output: { type: 'string', short: 'o', default: 'report.html' },
     json: { type: 'string' }, 'slow-ms': { type: 'string', default: '1000' },
     top: { type: 'string', default: '20' }, 'normalize-ids': { type: 'boolean', default: false },
+    'include-static': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) { console.log(help); return; }
@@ -40,7 +42,7 @@ export async function main(args = process.argv.slice(2)) {
   const outputs = [values.output, values.json].filter(Boolean).map(path => resolve(path));
   if (new Set(outputs).size !== outputs.length) throw new Error('HTML 和 JSON 输出不能使用相同路径');
   if (positionals.some(path => path !== '-' && outputs.includes(resolve(path)))) throw new Error('输出路径不能覆盖输入日志');
-  const data = await analyzeStreams(openInputs(positionals), { slowMs, top, normalizeIds: values['normalize-ids'] });
+  const data = await analyzeStreams(openInputs(positionals), { slowMs, top, normalizeIds: values['normalize-ids'], includeStatic: values['include-static'] });
   if (!data.overall.count) throw new Error(`没有有效日志记录（无效行 ${data.quality.invalid}），未生成报告。请检查日志格式。`);
   for (const output of outputs) await mkdir(dirname(output), { recursive: true });
   await writeFile(outputs[0], renderReport(data), 'utf8');
