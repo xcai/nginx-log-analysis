@@ -1,0 +1,5 @@
+node_modules/
+report.html
+reports/
+stats.json
+*.gz

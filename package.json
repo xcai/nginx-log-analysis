@@ -1,0 +1,13 @@
+{
+  "name": "nginx-log-analysis",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline Nginx upstream timing analysis and HTML reports",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test",
+    "analyze": "node analyze.mjs",
+    "demo": "node analyze.mjs examples/access.log -o report.html"
+  }
+}
