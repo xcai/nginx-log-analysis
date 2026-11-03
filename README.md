@@ -59,10 +59,38 @@ node analyze.mjs access_timing.log other.log --watch \
 | `--alert-ms` | `10000` | 按 `rt=$request_time` 判断，单位毫秒，包含等于阈值 |
 | `--alert-cooldown-ms` | `60000` | 按日志文件 + HTTP 方法 + 去掉查询参数的路径限频；`0` 每条都通知 |
 | `--poll-ms` | `1000` | 文件轮询间隔，正整数毫秒 |
+| `--config` | 不读取配置文件 | 告警 JSON 配置文件路径，环境变量优先 |
 | `--feishu-webhook` | `FEISHU_WEBHOOK_URL` 环境变量 | 飞书自定义机器人 Webhook |
 | `--email-to` | `ALERT_EMAIL_TO` 环境变量 | 邮件收件人，多个地址用逗号分隔 |
 
 告警参数必须与 `--watch` 一起使用。监控不支持 stdin、`.gz` 和报告选项（`--output`、`--json`、`--slow-ms`、`--top`、`--normalize-ids`、`--include-static`）；包含静态资源在内的所有有效请求都参与告警。缺失或非法 RT、格式错误的行不会触发通知。
+
+### 配置文件与优先级
+
+通知配置优先读取环境变量，未设置的键再从 `--config` 指定的 JSON 文件读取；显式传入的 `--feishu-webhook`、`--email-to` 仍具有最高优先级。不指定 `--config` 时不读取配置文件；相对路径基于当前工作目录，文件在启动时读取一次。
+
+配置文件使用与环境变量相同的键名，例如：
+
+```json
+{
+  "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/替换为机器人标识",
+  "FEISHU_SECRET": "替换为签名密钥",
+  "SMTP_HOST": "smtp.example.com",
+  "SMTP_PORT": 465,
+  "SMTP_SECURE": true,
+  "SMTP_REQUIRE_TLS": false,
+  "SMTP_USER": "monitor@example.com",
+  "SMTP_PASS": "替换为 SMTP 密码或授权码",
+  "SMTP_FROM": "monitor@example.com",
+  "ALERT_EMAIL_TO": "ops@example.com,dev@example.com"
+}
+```
+
+```bash
+node analyze.mjs /var/log/nginx/access_timing.log --watch --config /etc/nginx-log-analysis/alerts.json
+```
+
+仅保留需要启用的渠道配置。端口支持数字或字符串，TLS 开关支持 JSON 布尔值或 `"true"` / `"false"` 字符串。已设置的环境变量（包括空字符串）不会被配置文件覆盖。配置文件必须为 JSON 对象，读取或解析失败时启动报错。请限制文件权限（例如 `chmod 600`），不要将包含真实密钥的配置文件提交到仓库。
 
 ### 飞书机器人
 

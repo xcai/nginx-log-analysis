@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
+import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 
@@ -109,7 +110,27 @@ test('watch CLI validates monitor options', async t => {
   assert.ok(run(['--help']).stdout.includes('--watch'));
 });
 
-test('watch CLI sends new slow requests to Webhook and exits cleanly on SIGTERM', { timeout: 5000 }, async t => {
+test('watch CLI rejects unreadable or malformed notification config without exposing secrets', async t => {
+  const directory = await temporary(t);
+  const path = join(directory, 'config.json');
+  for (const source of ['{"FEISHU_SECRET":"private-secret",', 'null', '[]', '"private-secret"']) {
+    await writeFile(path, source);
+    const result = run([samplePath, '--watch', '--config', path]);
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes('--config'), result.stderr);
+    assert.ok(!result.stderr.includes('private-secret'), result.stderr);
+  }
+  const missing = run([samplePath, '--watch', '--config', join(directory, 'missing.json')]);
+  assert.equal(missing.status, 1);
+  assert.ok(missing.stderr.includes('ENOENT'), missing.stderr);
+  const report = run([samplePath, '--config', path]);
+  assert.equal(report.status, 1);
+  assert.ok(report.stderr.includes('--watch'), report.stderr);
+  assert.ok(run(['--help']).stdout.includes('--config'));
+});
+
+for (const source of ['config', 'env', 'cli']) {
+test(`watch CLI sends Webhook from ${source} and exits cleanly on SIGTERM`, { timeout: 5000 }, async t => {
   const directory = await temporary(t);
   const path = join(directory, 'access.log');
   const log = seconds => `192.0.2.1 [2026-10-30T09:55:40+08:00] "GET /api/orders?secret=hidden HTTP/1.1" 200 123 "-" "Agent" rt=${seconds}\n`;
@@ -127,9 +148,18 @@ test('watch CLI sends new slow requests to Webhook and exits cleanly on SIGTERM'
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const env = { ...process.env };
-  for (const name of ['FEISHU_SECRET', 'ALERT_EMAIL_TO']) delete env[name];
+  for (const name of ['FEISHU_WEBHOOK_URL', 'FEISHU_SECRET', 'ALERT_EMAIL_TO']) delete env[name];
+  const webhook = `http://127.0.0.1:${server.address().port}/hook`;
+  const configPath = join(directory, 'config.json');
+  await writeFile(configPath, JSON.stringify({
+    FEISHU_WEBHOOK_URL: source === 'config' ? webhook : 'file:///config-hook', FEISHU_SECRET: 'config-secret',
+  }));
+  if (source !== 'config') {
+    env.FEISHU_WEBHOOK_URL = source === 'env' ? webhook : 'file:///env-hook';
+    env.FEISHU_SECRET = 'env-secret';
+  }
   const child = spawn(process.execPath, [cli, path, '--watch', '--poll-ms', '5', '--alert-ms', '10000',
-    '--feishu-webhook', `http://127.0.0.1:${server.address().port}/hook`], { cwd: directory, env });
+    '--config', configPath, ...(source === 'cli' ? ['--feishu-webhook', webhook] : [])], { cwd: directory, env });
   const closed = once(child, 'close');
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   let stdout = '';
@@ -144,9 +174,11 @@ test('watch CLI sends new slow requests to Webhook and exits cleanly on SIGTERM'
   const body = await notification;
   assert.ok(body.content.text.includes('12000 ms'));
   assert.ok(!body.content.text.includes('hidden'));
+  assert.equal(body.sign, createHmac('sha256', `${body.timestamp}\n${env.FEISHU_SECRET ?? 'config-secret'}`).update('').digest('base64'));
   child.kill('SIGTERM');
   const [code, signal] = await closed;
   assert.equal(code, 0, stderr);
   assert.equal(signal, null);
   await assert.rejects(readFile(join(directory, 'report.html')), { code: 'ENOENT' });
 });
+}

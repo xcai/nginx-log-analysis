@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeStreams, openInputs } from './lib/analysis.mjs';
@@ -22,6 +22,7 @@ const help = `Nginx access log 性能分析与监控（Node.js >= 20；邮件告
   --alert-ms <毫秒>       监控告警阈值，默认 10000（包含等于阈值）
   --alert-cooldown-ms <毫秒> 同文件同接口告警冷却时间，默认 60000；0 不限制
   --poll-ms <毫秒>        监控轮询间隔，默认 1000
+  --config <路径>        告警 JSON 配置文件，环境变量优先于配置文件
   --feishu-webhook <URL>  飞书机器人地址，也可设 FEISHU_WEBHOOK_URL
   --email-to <收件人>     邮件收件人，逗号分隔；也可设 ALERT_EMAIL_TO
   -h, --help              显示帮助
@@ -41,7 +42,8 @@ export async function main(args = process.argv.slice(2)) {
     'include-static': { type: 'boolean', default: false },
     watch: { type: 'boolean', default: false },
     'alert-ms': { type: 'string' }, 'alert-cooldown-ms': { type: 'string' },
-    'poll-ms': { type: 'string' }, 'feishu-webhook': { type: 'string' }, 'email-to': { type: 'string' },
+    'poll-ms': { type: 'string' }, config: { type: 'string' },
+    'feishu-webhook': { type: 'string' }, 'email-to': { type: 'string' },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) { console.log(help); return; }
@@ -58,8 +60,15 @@ export async function main(args = process.argv.slice(2)) {
     if (!Number.isFinite(thresholdMs) || thresholdMs <= 0) throw new Error('--alert-ms 必须是大于 0 的毫秒数');
     if (!Number.isSafeInteger(cooldownMs) || cooldownMs < 0) throw new Error('--alert-cooldown-ms 必须为非负整数');
     if (!Number.isSafeInteger(pollMs) || pollMs < 1) throw new Error('--poll-ms 必须为正整数');
-    const notifier = await createNotifier({ feishuWebhook: values['feishu-webhook'] ?? process.env.FEISHU_WEBHOOK_URL,
-      emailTo: values['email-to'] ?? process.env.ALERT_EMAIL_TO });
+    let config = {};
+    if (values.config !== undefined) {
+      const source = await readFile(values.config, 'utf8');
+      try { config = JSON.parse(source); }
+      catch { throw new Error('--config 配置文件必须为有效 JSON'); }
+      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('--config 配置文件必须为 JSON 对象');
+    }
+    const notifier = await createNotifier({ feishuWebhook: values['feishu-webhook'],
+      emailTo: values['email-to'], config });
     const controller = new AbortController();
     const stop = () => controller.abort();
     process.once('SIGINT', stop);
@@ -77,7 +86,7 @@ export async function main(args = process.argv.slice(2)) {
     }
     return;
   }
-  if (['alert-ms', 'alert-cooldown-ms', 'poll-ms', 'feishu-webhook', 'email-to'].some(name => values[name] !== undefined)) {
+  if (['alert-ms', 'alert-cooldown-ms', 'poll-ms', 'config', 'feishu-webhook', 'email-to'].some(name => values[name] !== undefined)) {
     throw new Error('告警选项需要配合 --watch 使用');
   }
   const slowMs = Number(values['slow-ms']);

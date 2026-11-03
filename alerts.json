@@ -1,0 +1,12 @@
+{
+  "FEISHU_WEBHOOK_URL": "",
+  "FEISHU_SECRET": "",
+  "SMTP_HOST": "smtp.example.com",
+  "SMTP_PORT": 465,
+  "SMTP_SECURE": true,
+  "SMTP_REQUIRE_TLS": false,
+  "SMTP_USER": "",
+  "SMTP_PASS": "",
+  "SMTP_FROM": "monitor@example.com",
+  "ALERT_EMAIL_TO": ""
+}

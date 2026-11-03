@@ -103,6 +103,27 @@ test('Feishu sends signed text and reports business errors without stopping', as
   assert.equal(errors.length, 1);
 });
 
+test('notification settings prefer environment variables and fall back to config', async () => {
+  for (const env of [{}, { FEISHU_WEBHOOK_URL: 'https://example.com/env', FEISHU_SECRET: 'env-secret' }]) {
+    const errors = [];
+    const notifier = await createNotifier({ env,
+      config: { FEISHU_WEBHOOK_URL: 'https://example.com/config', FEISHU_SECRET: 'config-secret' },
+      log: () => {}, onError: message => errors.push(message), fetchImpl: async (url, options) => {
+        assert.equal(url.href, env.FEISHU_WEBHOOK_URL ?? 'https://example.com/config');
+        const body = JSON.parse(options.body);
+        const secret = env.FEISHU_SECRET ?? 'config-secret';
+        assert.equal(body.sign, createHmac('sha256', `${body.timestamp}\n${secret}`).update('').digest('base64'));
+        return { ok: true, json: async () => ({ code: 0 }) };
+      } });
+    await notifier.notify(alert);
+    assert.deepEqual(errors, []);
+    notifier.close();
+  }
+  await assert.rejects(createNotifier({ env: { SMTP_PORT: '0' }, config: {
+    ALERT_EMAIL_TO: 'ops@example.com', SMTP_HOST: 'localhost', SMTP_FROM: 'monitor@example.com', SMTP_PORT: 465,
+  } }), /SMTP_PORT/);
+});
+
 test('SMTP sends mail even when the Feishu channel fails', { timeout: 5000 }, async t => {
   const commands = [];
   const messages = [];
@@ -136,9 +157,10 @@ test('SMTP sends mail even when the Feishu channel fails', { timeout: 5000 }, as
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const errors = [];
-  const notifier = await createNotifier({ feishuWebhook: 'https://example.com/hook', emailTo: 'ops@example.com,dev@example.com',
-    env: { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(server.address().port), SMTP_FROM: 'monitor@example.com',
-      SMTP_SECURE: 'false', SMTP_REQUIRE_TLS: 'false' },
+  const notifier = await createNotifier({ feishuWebhook: 'https://example.com/hook',
+    config: { ALERT_EMAIL_TO: 'ops@example.com,dev@example.com', SMTP_HOST: 'invalid.example',
+      SMTP_PORT: server.address().port, SMTP_FROM: 'monitor@example.com', SMTP_SECURE: false, SMTP_REQUIRE_TLS: false },
+    env: { SMTP_HOST: '127.0.0.1' },
     log: () => {}, onError: message => errors.push(message), fetchImpl: async () => ({ ok: false, status: 500 }) });
   t.after(() => notifier.close());
   await notifier.notify(alert);
