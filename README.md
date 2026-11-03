@@ -1,6 +1,6 @@
 # Nginx 接口性能分析
 
-使用 Node.js 将 nginx的日志 access log 转为美化的、可搜索排序的离线 HTML 报告，辅助定位上游连接、首包等待和响应传输瓶颈。无需安装依赖，不上传日志，不加载 CDN。
+使用 Node.js 将 nginx的日志 access log 转为美化的、可搜索排序的离线 HTML 报告，辅助定位上游连接、首包等待和响应传输瓶颈。也支持持续监控新增日志，并通过飞书机器人或 SMTP 邮件发送慢请求告警。离线分析无需安装依赖、不上传日志、不加载 CDN；启用邮件告警需先安装依赖。
 
 ## 快速开始
 
@@ -41,6 +41,68 @@ npm test
 | `--normalize-ids` | 关闭 | 将完整数字和 UUID 路径段替换为 `:id` |
 | `--include-static` | 关闭 | 接口明细及优先排查包含静态资源，默认忽略 |
 | `-h, --help` | | 查看帮助 |
+
+## 持续监控与告警
+
+```bash
+# 默认从文件末尾监听，RT >= 10 秒时在终端输出告警
+node analyze.mjs /var/log/nginx/access_timing.log --watch --alert-ms 10000
+
+# 同时监控多个文件，阈值 5 秒，同文件同接口每 60 秒最多告警一次
+node analyze.mjs access_timing.log other.log --watch \
+  --alert-ms 5000 --alert-cooldown-ms 60000 --poll-ms 1000
+```
+
+| 监控参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--watch` | 关闭 | 持续监听普通文件，不读取历史数据，不生成 HTML / JSON |
+| `--alert-ms` | `10000` | 按 `rt=$request_time` 判断，单位毫秒，包含等于阈值 |
+| `--alert-cooldown-ms` | `60000` | 按日志文件 + HTTP 方法 + 去掉查询参数的路径限频；`0` 每条都通知 |
+| `--poll-ms` | `1000` | 文件轮询间隔，正整数毫秒 |
+| `--feishu-webhook` | `FEISHU_WEBHOOK_URL` 环境变量 | 飞书自定义机器人 Webhook |
+| `--email-to` | `ALERT_EMAIL_TO` 环境变量 | 邮件收件人，多个地址用逗号分隔 |
+
+告警参数必须与 `--watch` 一起使用。监控不支持 stdin、`.gz` 和报告选项（`--output`、`--json`、`--slow-ms`、`--top`、`--normalize-ids`、`--include-static`）；包含静态资源在内的所有有效请求都参与告警。缺失或非法 RT、格式错误的行不会触发通知。
+
+### 飞书机器人
+
+创建群自定义机器人，将 Webhook 和可选签名密钥设置到部署环境。推荐环境变量，避免 Webhook 出现在进程参数中。
+
+```bash
+export FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/替换为机器人标识'
+# 仅在机器人启用签名校验时设置
+export FEISHU_SECRET='替换为签名密钥'
+node analyze.mjs /var/log/nginx/access_timing.log --watch --alert-ms 10000
+```
+
+若配置关键词校验，请允许 `Nginx`；如开启 IP 白名单，应允许监控机器的出口 IP。支持机器人签名，检查 HTTP 状态和飞书业务返回码；发送失败会输出错误，不中断监控。
+
+### SMTP 邮件
+
+```bash
+npm ci
+export SMTP_HOST='smtp.example.com'
+export SMTP_PORT='465'
+export SMTP_SECURE='true'
+export SMTP_USER='monitor@example.com'
+export SMTP_PASS='替换为 SMTP 密码或授权码'
+export SMTP_FROM='monitor@example.com'
+export ALERT_EMAIL_TO='ops@example.com,dev@example.com'
+node analyze.mjs /var/log/nginx/access_timing.log --watch --alert-ms 10000
+```
+
+`SMTP_HOST`、`SMTP_FROM` 和收件人必填，认证账号 `SMTP_USER` / `SMTP_PASS` 必须成对设置，无认证的内部中继可省略。`SMTP_PORT` 默认 `465`，`SMTP_SECURE` 默认在 465 端口为 `true`（连接即 TLS），其他端口为 `false`（默认要求 STARTTLS）。587 端口通常设置 `SMTP_PORT=587`、`SMTP_SECURE=false`。默认验证 TLS 证书；仅可信内部明文中继可显式设置 `SMTP_REQUIRE_TLS=false`，不要用于公网凭据传输。
+
+飞书和邮件可同时启用，渠道独立发送，一个失败不影响另一个；无论是否配置外部渠道，告警都输出到终端。通知包含主机、日志路径、接口、RT、阈值、状态码及请求完成时间，不包含 IP、查询参数、Referer、UA 或原始日志行。
+
+### 运行边界
+
+- Nginx access log 通常在请求结束后才落盘。因此这是**已完成慢请求告警**，无法在请求尚未返回时检测“已等待 10 秒”；通知延迟还受日志缓冲、轮询间隔和通知耗时影响。
+- 按 UTF-8 / CRLF 处理，只消费以换行符结束的完整行；启动前已存在的不完整行也会跳过。超过 1 MiB 的未完成行丢弃，避免无界内存增长。
+- 支持 rename 后创建新文件的轮转（补读旧文件当前尾部，新文件从头读取），以及观察到文件变小的截断；轮转期间路径短暂不存在时继续等待。无法保证读取关闭旧句柄后仍写入旧文件的数据，也无法识别两次轮询之间截断后已长回原大小的 copytruncate。
+- 启动时文件必须存在且可读；其他文件读取错误会退出。Ctrl+C / SIGTERM 会关闭文件和邮件资源；正在发送的网络通知可能需等待超时，HTTP 和 SMTP 均配置了 10 秒超时。
+- 通知采用尽力发送，不持久化、不自动重试；失败的请求也计入冷却期，避免故障时反复轰炸。重启后从当前文件末尾开始，停机期间的日志不会补发；建议用 systemd / 容器运行并收集终端错误。
+- 不积累报表样本，内存主要用于文件读取缓冲和冷却期内的独立接口记录。通知串行处理请求、并行发送渠道；大量不同接口同时变慢或通知服务迟缓时可能出现读取积压，严格不漏告警的场景应使用持久化日志采集和消息队列。
 
 ## 日志格式
 
@@ -128,6 +190,8 @@ access_log /var/log/nginx/access_timing.log timings;
 node --max-old-space-size=4096 analyze.mjs access.log -o report.html
 ```
 
-合并多个日志时按合并后的请求计算分位数，不能用各文件 P95 的平均值代替。此工具面向批量离线分析，不是持续运行的监控系统。
+合并多个日志时按合并后的请求计算分位数，不能用各文件 P95 的平均值代替。`--watch` 是轻量增量告警模式，不替代带持久化、重试和指标存储的完整监控系统。
 
 HTML 与 JSON 不包含查询参数、IP、Referer、UA 或原始日志行，但仍包含请求路径。**路径本身可能携带姓名、token 等敏感信息，数字 / UUID 归一化也不能覆盖所有敏感路径，分享报告前仍需审核。** HTML 会转义路径并保护嵌入 JSON，防止日志中的恶意字符串变成可执行代码。
+
+监控模式会将告警中的路径和耗时发送到配置的飞书 / 邮件服务；接口路径本身仍可能包含敏感信息，启用前请确认接收人员及第三方服务符合隐私要求。不要提交 Webhook、机器人密钥或 SMTP 凭据到仓库。

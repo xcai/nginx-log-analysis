@@ -9,5 +9,8 @@
     "test": "node --test",
     "analyze": "node analyze.mjs",
     "demo": "node analyze.mjs examples/access.log -o report.html"
+  },
+  "dependencies": {
+    "nodemailer": "^10.3.1"
   }
 }

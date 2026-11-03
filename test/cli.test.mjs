@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, appendFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 
 const cli = fileURLToPath(new URL('../analyze.mjs', import.meta.url));
 const samplePath = fileURLToPath(new URL('../examples/access.log', import.meta.url));
@@ -85,4 +87,66 @@ test('corrupt gzip and missing gzip fail cleanly', async t => {
     assert.ok(result.stderr.startsWith('分析失败：'), result.stderr);
     assert.ok(!result.stderr.includes('Unhandled'), result.stderr);
   }
+});
+
+test('watch CLI validates monitor options', async t => {
+  const directory = await temporary(t);
+  const cases = [
+    [['-', '--watch'], '普通日志文件'],
+    [[samplePath, '--watch', '--alert-ms', '0'], '--alert-ms'],
+    [[samplePath, '--watch', '--poll-ms', '0'], '--poll-ms'],
+    [[samplePath, '--watch', '--alert-cooldown-ms', '-1'], '--alert-cooldown-ms'],
+    [[samplePath, '--watch', '-o', join(directory, 'report.html')], '报告选项'],
+    [[samplePath, samplePath, '--watch'], '不能重复'],
+    [[samplePath, '--alert-ms', '10000'], '--watch'],
+    [[join(directory, 'missing.log'), '--watch'], 'ENOENT'],
+  ];
+  for (const [args, message] of cases) {
+    const result = run(args);
+    assert.equal(result.status, 1, JSON.stringify(args));
+    assert.ok(result.stderr.includes(message), result.stderr);
+  }
+  assert.ok(run(['--help']).stdout.includes('--watch'));
+});
+
+test('watch CLI sends new slow requests to Webhook and exits cleanly on SIGTERM', { timeout: 5000 }, async t => {
+  const directory = await temporary(t);
+  const path = join(directory, 'access.log');
+  const log = seconds => `192.0.2.1 [2026-10-30T09:55:40+08:00] "GET /api/orders?secret=hidden HTTP/1.1" 200 123 "-" "Agent" rt=${seconds}\n`;
+  await writeFile(path, log(30));
+  let received;
+  const notification = new Promise(resolve => { received = resolve; });
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    response.setHeader('content-type', 'application/json');
+    response.end('{"code":0}');
+    received(JSON.parse(Buffer.concat(chunks).toString()));
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const env = { ...process.env };
+  for (const name of ['FEISHU_SECRET', 'ALERT_EMAIL_TO']) delete env[name];
+  const child = spawn(process.execPath, [cli, path, '--watch', '--poll-ms', '5', '--alert-ms', '10000',
+    '--feishu-webhook', `http://127.0.0.1:${server.address().port}/hook`], { cwd: directory, env });
+  const closed = once(child, 'close');
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  let stdout = '';
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  await new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', () => reject(new Error(`监控提前退出：${stderr}`)));
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); if (stdout.includes('正在监控')) resolve(); });
+  });
+  await appendFile(path, log(1) + log(12));
+  const body = await notification;
+  assert.ok(body.content.text.includes('12000 ms'));
+  assert.ok(!body.content.text.includes('hidden'));
+  child.kill('SIGTERM');
+  const [code, signal] = await closed;
+  assert.equal(code, 0, stderr);
+  assert.equal(signal, null);
+  await assert.rejects(readFile(join(directory, 'report.html')), { code: 'ENOENT' });
 });
